@@ -90,7 +90,10 @@ public class InjectGeneratedMojo extends AbstractMojo {
 
     private byte[] injectAnnotations(byte[] bytes, Set<String> targets) {
         ClassReader reader = new ClassReader(bytes);
-        ClassWriter writer = new ClassWriter(reader, 0);
+        // Do NOT pass reader to ClassWriter: that triggers a direct byte-copy optimisation
+        // which silently discards any visitAnnotation() calls made before the ClassReader
+        // feeds the method body, causing our @Generated injection to vanish.
+        ClassWriter writer = new ClassWriter(0);
         reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
             @Override
             public MethodVisitor visitMethod(int access, String name, String descriptor,
