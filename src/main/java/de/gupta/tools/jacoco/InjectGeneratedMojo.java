@@ -122,7 +122,11 @@ public class InjectGeneratedMojo extends AbstractMojo {
         private final String descriptor;
         private final Set<String> result;
 
-        private int step = 0;
+        // Expected local variable slot for the next load instruction.
+        // Starts at 0 (this), then increments by 1 for most types, 2 for long/double.
+        private int expectedVar = 0;
+        private boolean sawInvokeInterface = false;
+        private boolean sawReturn = false;
         private boolean ok = true;
         private boolean alreadyAnnotated = false;
 
@@ -139,26 +143,37 @@ public class InjectGeneratedMojo extends AbstractMojo {
             return null;
         }
 
-        // ── The three instructions we expect, in order ────────────────────────────────────────
+        // ── Loads: must be sequential (aload_0, aload_1, …) before the invoke ────────────────
 
         @Override
         public void visitVarInsn(int opcode, int var) {
-            step++;
-            if (step != 1 || opcode != Opcodes.ALOAD || var != 0) ok = false;
+            if (sawInvokeInterface || sawReturn) { ok = false; return; }
+            boolean isLoad = opcode == Opcodes.ALOAD || opcode == Opcodes.ILOAD ||
+                             opcode == Opcodes.FLOAD || opcode == Opcodes.LLOAD ||
+                             opcode == Opcodes.DLOAD;
+            if (!isLoad || var != expectedVar) { ok = false; return; }
+            // long/double occupy two slots
+            expectedVar += (opcode == Opcodes.LLOAD || opcode == Opcodes.DLOAD) ? 2 : 1;
         }
+
+        // ── Single invokeinterface call ───────────────────────────────────────────────────────
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String mName,
                                     String mDesc, boolean itf) {
-            step++;
-            if (step != 2 || opcode != Opcodes.INVOKEINTERFACE) ok = false;
+            if (sawInvokeInterface || sawReturn || opcode != Opcodes.INVOKEINTERFACE) {
+                ok = false; return;
+            }
+            sawInvokeInterface = true;
         }
+
+        // ── Return must be the last instruction ───────────────────────────────────────────────
 
         @Override
         public void visitInsn(int opcode) {
-            step++;
-            if (step == 3) ok &= isReturn(opcode);
-            else ok = false;
+            if (sawReturn || !sawInvokeInterface) { ok = false; return; }
+            if (!isReturn(opcode)) { ok = false; return; }
+            sawReturn = true;
         }
 
         // ── Any other real instruction → not a trivial delegate ───────────────────────────────
@@ -176,7 +191,8 @@ public class InjectGeneratedMojo extends AbstractMojo {
 
         @Override
         public void visitEnd() {
-            if (ok && step == 3 && !alreadyAnnotated) result.add(name + descriptor);
+            if (ok && sawInvokeInterface && sawReturn && !alreadyAnnotated)
+                result.add(name + descriptor);
         }
 
         private static boolean isReturn(int opcode) {
